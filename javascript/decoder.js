@@ -117,7 +117,7 @@ function registerCommand(
   parsePayload = undefined
 ) {
 
-  if (fport < 1 || fport > 255){
+  if (fport < 1 || fport > 223) {
     throw "fport must be between 1 and 255"
   }
 
