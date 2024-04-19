@@ -2,31 +2,91 @@ function isKthBitSet(byte, k) {
   return byte & (1 << k);
 }
 
+uint16.BYTES = 2;
+uint32.BYTES = 4;
+
 function uint16(bytes) {
   if (bytes.length !== uint16.BYTES) {
     throw new Error('uint16 must have exactly 2 bytes');
   }
 
-  var integer = 0;
-  for (var x = 0; x < bytes.length; x++) {
+  let integer = 0;
+  for (let x = 0; x < bytes.length; x++) {
     integer += integer*255 + bytes[x]
   }
   return integer;
 };
-uint16.BYTES = 2;
 
 function uint32(bytes) {
   if (bytes.length !== uint32.BYTES) {
     throw new Error('uint32 must have exactly 4 bytes');
   }
 
-  var integer = 0;
-  for (var x = 0; x < bytes.length; x++) {
+  let integer = 0;
+  for (let x = 0; x < bytes.length; x++) {
     integer += integer*255 + bytes[x]
   }
   return integer;
 };
-uint32.BYTES = 4;
+
+const commands = new Map()
+
+function registerCommand(
+  registred_commands_map,
+  fport, command_name, cmd_id,
+  parsePayload = undefined
+) {
+
+  if (fport < 1 || fport > 255){
+    throw "fport must be between 1 and 255"
+  }
+
+  if (cmd_id < 0 || cmd_id > 254){
+    throw "cmd_id must be between 0 and 254"
+  }
+
+  const fport_hex = fport.toString(16).padStart(2, '0');
+  const cmd_id_hex = cmd_id.toString(16).padStart(2, '0');
+
+  const key = fport_hex + cmd_id_hex
+
+  registred_commands_map.set(key, {
+    command_name: command_name,
+    parsePayload: parsePayload
+  })
+}
+
+function getCommand(
+  registred_commands_map, fport, cmd_id
+) {
+  const fport_hex = fport.toString(16).padStart(2, '0');
+  const cmd_id_hex = cmd_id.toString(16).padStart(2, '0');
+
+  const key = fport_hex + cmd_id_hex
+  const command = registred_commands_map.get(key)
+
+  if (!command){
+    throw new Error("command not registered")
+  }
+
+  return command
+}
+
+function parseHeader(bytes) {
+  const header = {}
+
+  if (bytes[0] === 255){
+    header.cmd_id = bytes[1]
+    header.ack = (bytes[2] === 255 ? false : true)
+    header.type = "acknowledge"
+  } else {
+    header.cmd_id = bytes[0]
+    header.ack = true
+    header.type = "response"
+  }
+
+  return header
+}
 
 function decodeFlags(flagByte) {
   var flags = new Object()
@@ -51,16 +111,18 @@ function parseCounts(payload){
   return data
 }
 
-function parseMountingHeight(payload){
-  data = {
-    mounting_height: uint16(payload.slice(0, 2))
-  }
-  return data
+function parseMountingHeight(payload) {
+  return { mounting_height: uint16(payload.slice(0, 2)) };
 }
 
-function parsePushPeriod(payload){
+function parsePushPeriod(payload) {
+  return { push_period_s: uint32(payload.slice(0, 4)) };
+}
+
+function parseAnalogOutput(payload){
   data = {
-    push_period_min: uint16(payload.slice(0, 2))
+    state: (payload.slice(0, 1) == 1 ? "ENABLED" : "DISABLED"),
+    max_occupancy: uint16(payload.slice(1, 3))
   }
   return data
 }
@@ -79,13 +141,6 @@ function parseCablePosition(payload){
   return data
 }
 
-function parseAccessPointState(payload){
-  data = {
-    state: (payload.slice(0) == 1 ? "ENABLED" : "DISABLED")
-  }
-  return data
-}
-
 function parseSoftwareVersion(payload){
   data = {
     software_version: String.fromCharCode(...payload.slice(1, 11)).slice(0, -1)
@@ -93,64 +148,46 @@ function parseSoftwareVersion(payload){
   return data
 }
 
-function parseHeader(bytes) {
-  header = {}
+function parseLoRaModuleVersion(payload){
 
-  if (bytes[0] === 255){
-    header.cmd_id = bytes[1]
-    header.ack = (bytes[2] === 255 ? false : true)
-    header.type = "acknowledge"
-  } else {
-    header.cmd_id = bytes[0]
-    header.ack = true
-    header.type = "response"
+  let lora_module_version = String.fromCharCode(...payload.slice(0, 10))
+
+  if (payload[0] === 255 && payload[1] === 255 && payload[2] === 255){
+    lora_module_version = "failure to retrieve"
   }
 
-  return header
+  data = {
+    lora_module_version: lora_module_version
+  }
+
+  return data
 }
 
-const commands = new Map()
+function parseDeviceType(payload){
 
-function registerCommand(
-  registred_commands_map,
-  fport, command_name, cmd_id,
-  parsePayload = undefined
-) {
+  device_type = String.fromCharCode(...payload.slice(0, 3))
 
-  if (fport < 1 || fport > 223) {
-    throw "fport must be between 1 and 255"
+  if (device_type === "XXX"){
+    device_type = "not recognized"
   }
 
-  if (cmd_id < 0 || cmd_id > 254){
-    throw "cmd_id must be between 0 and 254"
+  data = {
+    device_type: device_type
   }
 
-  fport_hex = fport.toString(16).padStart(2, '0');
-  cmd_id_hex = cmd_id.toString(16).padStart(2, '0');
-
-  key = fport_hex + cmd_id_hex
-
-  registred_commands_map.set(key, {
-    command_name: command_name,
-    parsePayload: parsePayload
-  })
+  return data
 }
 
-function getCommand(
-  registred_commands_map, fport, cmd_id
-) {
-  fport_hex = fport.toString(16).padStart(2, '0');
-  cmd_id_hex = cmd_id.toString(16).padStart(2, '0');
-
-  key = fport_hex + cmd_id_hex
-  command = registred_commands_map.get(key)
-
-  if (!command){
-    throw "command not registered"
+function parseAccessPointState(payload){
+  data = {
+    state: (payload.slice(0) == 1 ? "ENABLED" : "DISABLED")
   }
-
-  return command
+  return data
 }
+
+
+
+
 
 
 
@@ -181,7 +218,7 @@ function getCommand(
 */
 
 /* UPLINKS WITH CUSTOM FRAME STRUCTURE */
-COUNTING_DATA_UPLINK = 1
+COUNTING_DATA_UPLINK = 82
 /* UPLINKS WITH CUSTOM FRAME STRUCTURE END */
 
 
@@ -196,23 +233,29 @@ registerCommand(commands, F_PORT_COUNTS, "CMD_CNT_SET", 130)
 
 F_PORT_REBOOT = 3
 /* HANDLER GROUP REBOOT COMMANDS */
-registerCommand(commands, F_PORT_REBOOT, "CMD_DEV_RBT", 1)
+registerCommand(commands, F_PORT_REBOOT, "CMD_DEVICE_REBOOT", 1)
 registerCommand(commands, F_PORT_REBOOT, "CMD_TPC_RST", 2)
 /* HANDLER GROUP REBOOT END */
 
 F_PORT_GET_SOFTWARE_VERSION = 4
 /* HANDLER GROUP GET SOFTWARE VERSION COMMANDS */
-registerCommand(commands, F_PORT_GET_SOFTWARE_VERSION, "CMD_GET_SW_VER", 1,
+registerCommand(commands, F_PORT_GET_SOFTWARE_VERSION, "CMD_GET_SW_VER", 138,
   parsePayload = parseSoftwareVersion
+)
+registerCommand(commands, F_PORT_GET_SOFTWARE_VERSION, "CMD_GET_DEVICE_TYPE", 128,
+  parsePayload = parseDeviceType
+)
+registerCommand(commands, F_PORT_GET_SOFTWARE_VERSION, "CMD_GET_LORA_MODULE_VERSION", 139,
+  parsePayload = parseLoRaModuleVersion
 )
 /* HANDLER GROUP GET SOFTWARE VERSION END */
 
 F_PORT_ACCESS_POINT = 5
 /* HANDLER GROUP ACCESS POINT COMMANDS */
-registerCommand(commands, F_PORT_ACCESS_POINT, "CMD_GET_AP_STATE", 1,
+registerCommand(commands, F_PORT_ACCESS_POINT, "CMD_GET_ACCESS_POINT_STATE", 1,
   parsePayload = parseAccessPointState
 )
-registerCommand(commands, F_PORT_ACCESS_POINT, "CMD_SET_AP_STATE", 129)
+registerCommand(commands, F_PORT_ACCESS_POINT, "CMD_SET_ACCESS_POINT_STATE", 129)
 /* HANDLER GROUP ACCESS POINT END */
 
 F_PORT_REJOIN = 6
@@ -220,7 +263,15 @@ F_PORT_REJOIN = 6
 registerCommand(commands, F_PORT_REJOIN, "CMD_FORCE_REJOIN", 1)
 /* HANDLER GROUP REJOIN END */
 
-F_PORT_COUNTING_PARAM = 7
+F_PORT_ANALOG_OUTPUT = 8
+/* HANDLER GROUP ANALOG OUTPUT COMMANDS */
+registerCommand(commands, F_PORT_ANALOG_OUTPUT, "CMD_GET_ANALOG_OUTPUT", 1,
+  parsePayload = parseAnalogOutput
+)
+registerCommand(commands, F_PORT_ANALOG_OUTPUT, "CMD_SET_ANALOG_OUTPUT", 129)
+/* HANLDER GROUP ANALOG OUTPUT END */
+
+F_PORT_COUNTING_PARAM = 100
 /* HANDLER GROUP COUNTING PARAMETERS COMMANDS */
 registerCommand(commands, F_PORT_COUNTING_PARAM, "CMD_SET_HEIGHT", 129)
 registerCommand(commands, F_PORT_COUNTING_PARAM, "CMD_GET_HEIGHT", 1,
@@ -243,9 +294,8 @@ registerCommand(commands, F_PORT_COUNTING_PARAM, "CMD_GET_CABLE_CONNECTION", 4,
 
 function decodeUplink(input) {
 
-  var data = new Object()
-
-  var fport = input.fPort
+  const data = new Object()
+  const fport = input.fPort
 
   if (fport === COUNTING_DATA_UPLINK){
     data.count_in = uint32(input.bytes.slice(0, 4))
@@ -257,9 +307,9 @@ function decodeUplink(input) {
     };
   }
 
-  var header = parseHeader(input.bytes)
+  const header = parseHeader(input.bytes)
 
-  var command
+  let command
   try {
     command = getCommand(commands, fport, header.cmd_id)
   } catch (e) {
@@ -275,8 +325,7 @@ function decodeUplink(input) {
   }
 
   if (header.type === "response") {
-    payload = input.bytes.slice(1)
-
+    const payload = input.bytes.slice(1)
     data.cmd.value = command.parsePayload(payload)
   }
 
